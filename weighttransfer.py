@@ -54,6 +54,35 @@ import scipy as sp
 import robust_laplacian
 
 
+def barycentric_coordinates_tri(P, A, B, C):
+    if hasattr(igl, "barycentric_coordinates_tri"):
+        return igl.barycentric_coordinates_tri(P, A, B, C)
+    return igl.barycentric_coordinates(P, A, B, C)
+
+
+def min_quad_with_fixed(A, B, known, Y, Aeq, Beq):
+    A = sp.sparse.csc_matrix(A, dtype=np.float64)
+    A.sort_indices()
+    B = np.ascontiguousarray(B, dtype=np.float64)
+    known = np.ascontiguousarray(known, dtype=np.int64)
+    Y = np.ascontiguousarray(Y, dtype=np.float64)
+    Aeq = sp.sparse.csc_matrix(Aeq, dtype=np.float64)
+    Aeq.sort_indices()
+    Beq = np.ascontiguousarray(Beq, dtype=np.float64)
+
+    try:
+        solve_result = igl.min_quad_with_fixed(A, B, known, Y, Aeq, Beq, True)
+    except TypeError:
+        empty_B = np.zeros((0, 0), dtype=np.float64)
+        empty_Aeq = sp.sparse.csc_matrix((0, 0), dtype=np.float64)
+        empty_Beq = np.zeros((0, 0), dtype=np.float64)
+        solve_result = igl.min_quad_with_fixed(A, empty_B, known, Y, empty_Aeq, empty_Beq, True)
+
+    if isinstance(solve_result, tuple):
+        return solve_result
+    return True, solve_result
+
+
 def find_closest_point_on_surface(P, V, F):
     """
     Given a number of points find their closest points on the surface of the V,F mesh
@@ -76,7 +105,7 @@ def find_closest_point_on_surface(P, V, F):
     V2 = V[F_closest[:,1],:]
     V3 = V[F_closest[:,2],:]
 
-    B = igl.barycentric_coordinates_tri(C, V1, V2, V3)
+    B = barycentric_coordinates_tri(C, V1, V2, V3)
 
     return sqrD,I,C,B
 
@@ -190,14 +219,22 @@ def inpaint(V2, F2, W2, Matched, point_cloud):
     Q2 = -L + L*Minv*L
     Q2 = Q2.astype(np.float64)
 
-    Aeq = sp.sparse.csc_matrix((0, 0), dtype=np.float64)
-    Beq = np.array([], dtype=np.float64)
-    B = np.zeros(shape = (L.shape[0], W2.shape[1]), dtype=np.float64)
+    Aeq = sp.sparse.csc_matrix((0, L.shape[0]), dtype=np.float64)
+    Beq = np.zeros((0, W2.shape[1]), dtype=np.float64)
+    B = np.zeros((L.shape[0], W2.shape[1]), dtype=np.float64)
 
-    b = np.array(range(0, int(V2.shape[0])), dtype=np.int64)
-    b = b[Matched]
-    bc = W2[Matched,:].astype(np.float64)
-    result, W_inpainted = igl.min_quad_with_fixed(Q2, B, b, bc, Aeq, Beq, True)
+    b = np.arange(V2.shape[0], dtype=np.int64)
+    b = np.ascontiguousarray(b[Matched])
+    bc = np.ascontiguousarray(W2[Matched,:].astype(np.float64))
+
+    if b.shape[0] == 0:
+        return False, W2
+
+    try:
+        result, W_inpainted = min_quad_with_fixed(Q2, B, b, bc, Aeq, Beq)
+    except (RuntimeError, TypeError):
+        return False, W2
+
     W_inpainted = W_inpainted.astype(np.float32)
     # when W2 shape = (num_verts, 1), it gets flattened to (num_verts, )
     # reshape it back to initial shape, limit_mask expects 2d array
