@@ -20,7 +20,7 @@
 bl_info = {
     "name": "Robust Weight Transfer",
     "author": "sentfromspacevr",
-    "version": (1, 2, 0),
+    "version": (1, 2, 1),
     "blender": (3, 1, 0),
     "doc_url": "https://jinxxy.com/SentFromSpaceVR/robust-weight-transfer",
     "location": "View3D > Sidebar > SENT Tab",
@@ -47,7 +47,8 @@ user_site = sysconfig.get_paths(scheme, vars={"userbase": libs_path})["purelib"]
 site.addsitedir(user_site)
 
 DEPENDENCIES = ["robust_laplacian", "igl", "scipy"]
-LIBIGL_REQUIREMENT = "libigl>=2.5.1,<2.7"
+LIBIGL_REQUIREMENT = "libigl>=2.5.1,<2.6.2"
+ROBUST_LAPLACIAN_REQUIREMENT = "robust-laplacian>=1.0.0,<1.2"
 missing_deps = []
 for module in DEPENDENCIES:
     try:
@@ -55,6 +56,8 @@ for module in DEPENDENCIES:
     except ImportError:
         if module == "igl":
             missing_deps.append(LIBIGL_REQUIREMENT)
+        elif module == "robust_laplacian":
+            missing_deps.append(ROBUST_LAPLACIAN_REQUIREMENT)
         else:
             missing_deps.append(module)
 
@@ -64,9 +67,9 @@ print(missing_deps)
 
 if not missing_deps:
     import igl
-    module_name = f"{__package__}.weighttransfer"
-    if module_name in sys.modules:
-        importlib.reload(sys.modules[module_name])
+    for module_name in (f"{__package__}.weighttransfer", f"{__package__}.util"):
+        if module_name in sys.modules:
+            importlib.reload(sys.modules[module_name])
     from .weighttransfer import find_matches_closest_surface, inpaint, limit_mask, smooth_weigths
     from . import util
 
@@ -134,7 +137,8 @@ class RobustWeightTransfer(bpy.types.Operator):
         source_weights = util.get_groups_arr(source_obj, is_deform if deform_only else None) # (num_verts, )
         for obj in target_objs:
             object_settings: ObjectSettingsGroup = obj.robust_weight_transfer_settings
-            verts, triangles, normals = util.get_obj_arrs_world(obj.evaluated_get(depsgraph) if scene_settings.use_deformed_target else obj)
+            target_eval_obj = obj.evaluated_get(depsgraph) if scene_settings.use_deformed_target else obj
+            verts, triangles, normals = util.get_obj_arrs_world(target_eval_obj)
             matched_verts, weights = find_matches_closest_surface(source_verts, source_triangles, source_normals, verts, normals, source_weights, scene_settings.max_distance**2, math.degrees(scene_settings.max_normal_angle_difference), scene_settings.flip_vertex_normal)
             if not scene_settings.apply_to_selected:
                 if util.is_group_valid(obj.vertex_groups, object_settings.inpaint_group):
@@ -693,13 +697,26 @@ class InstallDependencies(bpy.types.Operator):
             constraints_path = os.path.join(os.path.dirname(__file__), "constraints.txt")
             with open(constraints_path, "w") as f:
                 f.write(f"numpy=={np.__version__}\n")
-                f.write(f"robust_laplacian==1.0.0\n") 
 
             # we do a pip user install under a custom user base path
             # makes use of existing installed python packages like numpy, still uses pips dependency resolution and keeps it isolated
             env = os.environ.copy()
             env["PYTHONUSERBASE"] = libs_path
-            subprocess.check_call([python_exe, "-m", "pip", "install", "--user", *missing_deps, "--break-system-packages", "-c", constraints_path], env=env)
+            install_cmd = [python_exe, "-m", "pip", "install", "--user", "--only-binary=:all:", *missing_deps, "--break-system-packages", "-c", constraints_path]
+            install_result = subprocess.run(install_cmd, env=env, capture_output=True, text=True)
+            if install_result.returncode != 0:
+                log_path = os.path.join(os.path.dirname(__file__), "dependency-install.log")
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.write("Command:\n")
+                    f.write(" ".join(install_cmd))
+                    f.write("\n\nstdout:\n")
+                    f.write(install_result.stdout)
+                    f.write("\n\nstderr:\n")
+                    f.write(install_result.stderr)
+                error_lines = (install_result.stderr or install_result.stdout).strip().splitlines()
+                error_message = error_lines[-1] if error_lines else "pip failed without output"
+                self.report({'ERROR'}, f"Installation failed: {error_message}. See dependency-install.log")
+                return {'CANCELLED'}
             self.report({'INFO'}, "Installation successful! Please restart Blender.")
             global installed_deps
             installed_deps = True
