@@ -47,13 +47,14 @@ user_site = sysconfig.get_paths(scheme, vars={"userbase": libs_path})["purelib"]
 site.addsitedir(user_site)
 
 DEPENDENCIES = ["robust_laplacian", "igl", "scipy"]
+LIBIGL_REQUIREMENT = "libigl>=2.5.1,<2.7"
 missing_deps = []
 for module in DEPENDENCIES:
     try:
         importlib.import_module(module)
     except ImportError:
         if module == "igl":
-            missing_deps.append("libigl==2.6.1")
+            missing_deps.append(LIBIGL_REQUIREMENT)
         else:
             missing_deps.append(module)
 
